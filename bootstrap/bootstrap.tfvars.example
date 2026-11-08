@@ -1,0 +1,11 @@
+# Copy this file to bootstrap.tfvars and replace the example values.
+state_storage_account_name = "replacewithuniquename"
+
+state_blob_principal_object_ids = {
+  # Use the Microsoft Entra object ID, not the application (client) ID.
+  # Replace this example with your own user object ID if you will run Terraform locally.
+  local_user = "REPLACE-WITH-USER-OBJECT-ID"
+
+  # Add a separate entry when you have created a pipeline service connection.
+  # pipeline = "REPLACE-WITH-SERVICE-PRINCIPAL-OBJECT-ID"
+}
