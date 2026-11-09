@@ -1,2 +1,4 @@
-# Add values for declared development environment variables here.
-# This file is intended for Git; do not put secrets in it.
+resource_group_name = "rg-adfdemo-dev"
+location            = "francecentral"
+environment         = "dev"
+project_name        = "adfdemo"
