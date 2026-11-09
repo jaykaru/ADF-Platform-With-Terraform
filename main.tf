@@ -8,3 +8,18 @@ resource "azurerm_resource_group" "main" {
     Project     = "ADF-Platform-Demo"
   }
 }
+
+module "storage" {
+  source = "./modules/storage"
+
+storage_account_name = var.storage_account_name
+
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+
+  tags = {
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+    Project     = "ADF-Platform-Demo"
+  }
+}
