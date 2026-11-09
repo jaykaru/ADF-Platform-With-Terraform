@@ -13,6 +13,7 @@ variable "state_resource_group_name" {
 variable "state_storage_account_name" {
   description = "Globally unique storage account name (3-24 lowercase letters and numbers)."
   type        = string
+  default     = "stadftfstatefrc001"
 
   validation {
     condition     = can(regex("^[a-z0-9]{3,24}$", var.state_storage_account_name))
