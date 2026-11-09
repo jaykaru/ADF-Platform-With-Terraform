@@ -14,3 +14,8 @@ variable "environment" {
 variable "project_name" {
   type = string
 }
+
+variable "storage_account_name" {
+  description = "Name of the ADF data storage account."
+  type        = string
+}
