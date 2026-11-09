@@ -1,0 +1,125 @@
+trigger: none
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - name: serviceConnection
+    value: sc-adf-dev
+  - name: subscriptionId
+    value: 32a5945b-da3d-48dd-acf7-f51a950dc4f4
+  - name: stateResourceGroup
+    value: rg-adf-tfstate-frc-001
+  - name: stateStorageAccount
+    value: stadftfstatefrc001
+  - name: stateContainer
+    value: tfstate
+  - name: environmentName
+    value: dev
+  - name: terraformVersion
+    value: 1.13.3
+  - name: workingDir
+    value: $(Build.SourcesDirectory)
+
+stages:
+  - stage: Plan
+    jobs:
+      - job: plan
+        steps:
+          - bash: |
+              set -euo pipefail
+              curl -fsSL -o tf.zip https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_linux_amd64.zip
+              sudo unzip -o tf.zip terraform -d /usr/local/bin
+              terraform version
+            displayName: Install Terraform $(terraformVersion)
+
+          - task: AzureCLI@2
+            displayName: Terraform init, validate and plan
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              workingDirectory: $(workingDir)
+              inlineScript: |
+                set -euo pipefail
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_SUBSCRIPTION_ID="$SUBSCRIPTION_ID"
+                export ARM_USE_OIDC=true
+                export ARM_OIDC_TOKEN="$idToken"
+
+                actual_subscription="$(az account show --query id -o tsv)"
+                if [[ "${actual_subscription,,}" != "${SUBSCRIPTION_ID,,}" ]]; then
+                  echo "Service connection subscription does not match subscriptionId." >&2
+                  exit 1
+                fi
+                terraform fmt -check -recursive
+                terraform init -input=false -lockfile=readonly \
+                  -backend-config="resource_group_name=$(stateResourceGroup)" \
+                  -backend-config="storage_account_name=$(stateStorageAccount)" \
+                  -backend-config="container_name=$(stateContainer)" \
+                  -backend-config="key=$(environmentName).tfstate" \
+                  -backend-config="use_azuread_auth=true"
+                terraform validate
+                terraform plan -input=false -var-file="environments/$(environmentName).tfvars" -out=tfplan
+            env:
+              SUBSCRIPTION_ID: $(subscriptionId)
+
+          - publish: $(workingDir)/tfplan
+            artifact: tfplan
+            displayName: Publish plan
+
+  - stage: Apply
+    dependsOn: Plan
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: apply
+        environment: adf-platform-dev
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - download: none
+                - bash: |
+                    set -euo pipefail
+                    curl -fsSL -o tf.zip https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_linux_amd64.zip
+                    sudo unzip -o tf.zip terraform -d /usr/local/bin
+                    terraform version
+                  displayName: Install Terraform $(terraformVersion)
+
+                - download: current
+                  artifact: tfplan
+
+                - task: AzureCLI@2
+                  displayName: Terraform apply saved plan
+                  inputs:
+                    azureSubscription: $(serviceConnection)
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    addSpnToEnvironment: true
+                    workingDirectory: $(workingDir)
+                    inlineScript: |
+                      set -euo pipefail
+                      export ARM_CLIENT_ID="$servicePrincipalId"
+                      export ARM_TENANT_ID="$tenantId"
+                      export ARM_SUBSCRIPTION_ID="$SUBSCRIPTION_ID"
+                      export ARM_USE_OIDC=true
+                      export ARM_OIDC_TOKEN="$idToken"
+
+                      actual_subscription="$(az account show --query id -o tsv)"
+                      if [[ "${actual_subscription,,}" != "${SUBSCRIPTION_ID,,}" ]]; then
+                        echo "Service connection subscription does not match subscriptionId." >&2
+                        exit 1
+                      fi
+                      terraform init -input=false -lockfile=readonly \
+                        -backend-config="resource_group_name=$(stateResourceGroup)" \
+                        -backend-config="storage_account_name=$(stateStorageAccount)" \
+                        -backend-config="container_name=$(stateContainer)" \
+                        -backend-config="key=$(environmentName).tfstate" \
+                        -backend-config="use_azuread_auth=true"
+                      terraform apply -input=false "$(Pipeline.Workspace)/tfplan/tfplan"
+                  env:
+                    SUBSCRIPTION_ID: $(subscriptionId)
