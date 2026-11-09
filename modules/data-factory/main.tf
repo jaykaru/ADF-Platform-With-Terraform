@@ -6,8 +6,13 @@ resource "azurerm_data_factory" "this" {
 
   managed_virtual_network_enabled = true
 
+
   identity {
-    type = "SystemAssigned"
+    type = "UserAssigned"
+
+    identity_ids = [
+      var.user_assigned_identity_id
+    ]
   }
 
   tags = var.tags
