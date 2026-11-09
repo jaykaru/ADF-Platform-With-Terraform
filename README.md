@@ -1,16 +1,30 @@
 # ADF Platform With Terraform
 
-This project will manage an Azure Data Factory (ADF) platform with Terraform. It currently contains the **state bootstrap**, backend configuration and platform/module placeholders; it does not yet create a data factory.
+This project will manage an Azure Data Factory (ADF) platform with Terraform. The platform configuration currently defines the development resource group `rg-adfdemo-dev` in France Central. The storage and Data Factory modules are placeholders; the configuration does not yet create a data factory.
+
+## 📌 Progress and next steps
+
+- [x] Created the `sc-adf-dev` service connection; its service principal was shown with **Contributor** on the subscription.
+- [x] Confirmed **Storage Blob Data Contributor** for the service principal in the state storage account's IAM.
+- [ ] Confirm the bootstrap apply completed successfully and check that the `tfstate` container exists.
+- [ ] Back up `bootstrap/terraform.tfstate` privately.
+- [ ] Confirm the pipeline values match the bootstrap outputs; configure the `adf-platform-dev` approval and authorize the pipeline.
+- [ ] Run the pipeline manually on `main`, review its plan, approve the apply and verify `rg-adfdemo-dev` and `dev.tfstate`.
+
+The role assignment was confirmed in the portal; the bootstrap apply outcome and pipeline deployment have not yet been confirmed here.
 
 ## 📁 Project structure
 
 ```text
-main.tf                       # Future platform resources and module calls
-variables.tf                  # Future platform inputs
+main.tf                       # Platform resource group
+variables.tf                  # Platform inputs
 outputs.tf                    # Future platform outputs
 providers.tf                  # Remote state backend configuration
+.terraform.lock.hcl           # Locked platform provider version and checksums
 environments/
   dev.tfvars                  # Development platform values; intended for Git
+pipelines/
+  azure-pipelines.yml         # Azure DevOps Plan and Apply pipeline
 modules/
   storage/                    # Future platform storage module
     main.tf
@@ -24,7 +38,7 @@ bootstrap/                    # Separate configuration for state storage and blo
   main.tf
   variables.tf
   outputs.tf
-  bootstrap.tfvars.example    # Template; copy to bootstrap.tfvars
+  bootstrap.tfvars            # Local identity inputs; ignored by Git
   tests/
 .gitignore
 README.md
@@ -33,9 +47,9 @@ README.md
 ## 🧭 How the two Terraform configurations work
 
 1. **Bootstrap:** creates a resource group, storage account, private blob container, and blob role assignments. Its own state is initially stored locally in `bootstrap/terraform.tfstate`.
-2. **ADF platform:** the future configuration in the project root uses the blob container for its separate state file, such as `dev.tfstate`. Running it does not update bootstrap state. The storage and Data Factory module files are placeholders, not yet connected to the root configuration.
+2. **ADF platform:** the configuration in the project root uses the blob container for its separate state file, such as `dev.tfstate`. Running it does not update bootstrap state. The storage and Data Factory module files are placeholders, not yet connected to the root configuration.
 
-The platform uses `environments/dev.tfvars` for development values instead of a root `terraform.tfvars`. Terraform does not load it automatically: pass `"-var-file=environments/dev.tfvars"` to commands such as `terraform plan`. This file is currently a placeholder because the platform has no declared variables yet.
+The platform uses `environments/dev.tfvars` for development values instead of a root `terraform.tfvars`. Terraform does not load it automatically: pass `"-var-file=environments/dev.tfvars"` to commands such as `terraform plan`. It selects the name `rg-adfdemo-dev`, the region `francecentral` and the `dev` environment.
 
 The `.gitignore` allows `environments/*.tfvars` to be committed so future pipelines can use them; other `.tfvars` files, including `bootstrap/bootstrap.tfvars`, remain ignored. **Never put secrets in environment variable files**; use an appropriate secrets-management solution instead.
 
@@ -49,7 +63,7 @@ The storage account uses France Central, geo-redundant storage (GRS), TLS 1.2, b
 The bootstrap assigns the built-in **Storage Blob Data Contributor** role at the **state storage account** scope, separately for every Microsoft Entra object ID in `state_blob_principal_object_ids`. This gives access to blobs in all containers in this account, not to all storage accounts in the subscription. Use this account only for appropriately trusted state files.
 
 - Use the **object ID** of the user, group or service principal—not an application/client ID.
-- Add your own user if you will access the backend from your laptop. Add the pipeline service principal separately when it exists. Pipeline setup is not included yet.
+- Add your own user if you will access the backend from your laptop. Add the pipeline service principal separately when it exists.
 - Keep each map label stable. Removing an entry and applying removes that Terraform-managed role assignment; changing a label can replace it. The apply identity must retain permission to manage role assignments.
 - This role is for **blob data**. The future pipeline or user also needs appropriate Azure management permissions to create ADF resources; this bootstrap does not grant those permissions.
 - Role assignments are not necessarily immediate: allow time for Azure RBAC propagation before testing access.
@@ -80,21 +94,28 @@ For your signed-in user, obtain the object ID:
 az ad signed-in-user show --query id --output tsv
 ```
 
-For a service connection, find its service principal's **Object ID** in Microsoft Entra ID > Enterprise applications > the service principal > Overview. The service connection's application/client ID is different. Ask an administrator if you cannot see the identity.
+For a service connection, find its service principal's **Object ID** in Microsoft Entra ID > Enterprise applications > the service principal > Overview. The service connection ID, application/client ID and App registration object ID are different; do not use them for this role assignment. Alternatively, sign in to the correct tenant and look up the object ID using the application/client ID:
 
-From the project root:
-
-```powershell
-Copy-Item .\bootstrap\bootstrap.tfvars.example .\bootstrap\bootstrap.tfvars
+```bash
+az ad sp show --id "<application-client-id>" --query id --output tsv
 ```
 
-Edit `bootstrap\bootstrap.tfvars`: choose a globally unique storage account name (3–24 lowercase letters and numbers), replace the example object ID, and add entries for any other authorized identities. Azure determines whether the account name is available. The file is ignored by Git; preserve a private copy of these inputs so you can manage the same assignments later.
+In `bootstrap/bootstrap.tfvars`, supply the service principal object ID. Create this local file if it does not exist; keep any existing entries when adding identities:
+
+```hcl
+state_blob_principal_object_ids = {
+  pipeline = "SERVICE-PRINCIPAL-OBJECT-ID"
+  # Add local_user = "YOUR-USER-OBJECT-ID" if your user needs blob access.
+}
+```
+
+The storage account name defaults to `stadftfstatefrc001`; override it in the same file if needed. Names must be globally unique, 3–24 lowercase letters and numbers. Azure determines whether the name is available. The input file is ignored by Git; preserve a private copy so you can manage the same assignments later.
 
 The defaults are `francecentral`, `rg-adf-tfstate-frc-001`, and container `tfstate`; override these in the same file if needed. Do not reuse the existing Enterprise Platform state account name.
 
 ### 3. Initialize, validate, plan and apply
 
-In PowerShell, from the project root:
+In PowerShell, from the project root (not from within `bootstrap`):
 
 ```powershell
 Set-Location .\bootstrap
@@ -112,6 +133,13 @@ terraform output backend_config
 
 Keep the bootstrap state backed up privately. The saved plan is ignored by Git and should be handled as sensitive data too. Run future bootstrap changes from this folder, with the same input file, and review the plan first.
 
+### 🔎 Verify bootstrap and role access
+
+- Check the bootstrap apply output completed successfully; from `bootstrap`, run `terraform output backend_config` and compare it with the pipeline values.
+- In Azure portal, open **Storage accounts > `stadftfstatefrc001` > Containers** and check for `tfstate`.
+- Open **Storage account > Access control (IAM) > Role assignments** and confirm the ADF service principal has **Storage Blob Data Contributor**. This blob role is separate from the subscription-level **Contributor** role.
+- Store a private backup of the local bootstrap state. The platform's `dev.tfstate` is separate and is written by a later platform apply.
+
 ## 💾 Configure remote state for the ADF platform
 
 After bootstrap succeeds and RBAC has propagated, use the three values from `terraform output backend_config` below. From the project root:
@@ -127,15 +155,40 @@ terraform init `
 
 The signed-in user must have the blob data role too; assigning it only to a pipeline does not give your user access. If the role was just assigned, wait and retry after propagation. Use a distinct state key for each environment and choose access boundaries deliberately—separate keys alone are not security isolation.
 
-The platform and module files are currently placeholders. Add and review the ADF resources and module calls before planning or applying; backend initialization alone does not deploy ADF or create its state file. If you already have platform state elsewhere, stop and follow Terraform's [state migration guidance](https://developer.hashicorp.com/terraform/language/settings/backends/configuration#migrate-state-between-backends) instead of starting with an empty backend.
+The platform configuration currently defines a resource group. The storage and Data Factory modules are placeholders. Backend initialization alone does not deploy anything or create the state file. If you already have platform state elsewhere, stop and follow Terraform's [state migration guidance](https://developer.hashicorp.com/terraform/language/settings/backends/configuration#migrate-state-between-backends) instead of starting with an empty backend.
 
-When platform variables and resources have been added and the backend has been initialized, select the development values explicitly from the project root:
+After initializing the backend, select the development values explicitly from the project root:
 
 ```powershell
 terraform plan "-var-file=environments/dev.tfvars" "-out=dev.tfplan"
 ```
 
 Review the plan before applying it. The environment file chooses variable values; the `key=dev.tfstate` backend setting above separately chooses the state file.
+
+## 🔄 Azure DevOps pipeline
+
+The pipeline in `pipelines/azure-pipelines.yml` installs Terraform 1.13.3 and runs **Plan**, publishes the saved plan, then runs **Apply** on `main` using that exact plan. It uses a workload identity federation service connection and Microsoft Entra blob authentication. Automatic triggers are disabled (`trigger: none`); run it manually once setup is complete.
+
+> [!IMPORTANT]
+> Verify the pipeline values and complete the steps below before running it. An Azure DevOps environment name alone does **not** create an approval: configure the approval check before the first run.
+
+1. **Create and authorize the service connection.** In Azure DevOps, go to **Project settings > Service connections** and create an Azure Resource Manager service connection using workload identity federation for the intended subscription. Confirm `serviceConnection` in the YAML matches its exact name. Permit this pipeline to use it when requested.
+2. **Check the subscription.** Confirm `subscriptionId` is the ID of the subscription selected in the service connection. The pipeline checks that they match. The service connection identity needs permission to create the resource group, such as Contributor at subscription scope or a suitable custom role. Subscription-wide Contributor also allows management of many other resources, so use the least privilege appropriate to your organization.
+3. **Create state storage and give blob access.** Complete the bootstrap setup above. Add the pipeline service principal's **object ID** to `state_blob_principal_object_ids` in `bootstrap/bootstrap.tfvars`, then review and apply the bootstrap plan. If bootstrap was already applied, apply a new bootstrap plan with the added identity. Do not remove your existing identities. This creates **Storage Blob Data Contributor** at the state storage account scope; Contributor alone does not grant blob data access. Wait for role propagation.
+4. **Check the backend values.** Use `terraform output backend_config` from the bootstrap directory to verify `stateResourceGroup`, `stateStorageAccount` and `stateContainer` in the pipeline. The environment name `dev` selects `environments/dev.tfvars` and the `dev.tfstate` blob.
+5. **Create the approval.** In Azure DevOps, open **Pipelines > Environments**, create `adf-platform-dev`, then open its **Approvals and checks** and add the appropriate approver. Restrict access to the environment and service connection. Without this check Apply will not wait for a human approval.
+6. **Create the pipeline.** Commit and push the files, including `.terraform.lock.hcl`. In Azure DevOps choose **Pipelines > New pipeline**, connect the repository, and select **Existing Azure Pipelines YAML file** with path `pipelines/azure-pipelines.yml`. Authorize required resources and manually run it on `main` once the values and prerequisites are confirmed.
+7. **Review before approving.** For the first deployment, expect a plan to create one resource group: `rg-adfdemo-dev` in `francecentral`. If the plan proposes anything unexpected, reject it and investigate. After approval, Apply runs the saved plan; verify the resource group and the `dev.tfstate` blob in Azure.
+
+The saved plan can contain sensitive data. Limit access to the pipeline and its artifacts and use an appropriate retention period. The pipeline does not run bootstrap or assign its own roles.
+
+### 📌 Pipeline improvements to revisit later
+
+- [ ] After the first successful manual run, consider automatic triggers for changes to the platform and pipeline files.
+- [ ] Add clearer checks and troubleshooting messages for missing or incorrect pipeline configuration.
+- [ ] Restore Terraform download verification, preferably including verification of HashiCorp's signed checksums.
+- [ ] Consider sharing repeated install and authentication steps through templates if more pipelines are added.
+- [ ] Review artifact access, retention, approval rules and least-privilege permissions as the project grows.
 
 ## 🔎 Troubleshooting
 
@@ -146,6 +199,15 @@ Review the plan before applying it. The environment file chooses variable values
 | Storage account name already taken | Storage account names are globally unique | Choose another name in `bootstrap.tfvars` |
 | `Too many command line arguments` in PowerShell | An argument was split | Quote arguments containing a dot, as in the commands above |
 | Terraform wants to recreate existing bootstrap resources | Bootstrap local state is missing, or the wrong subscription is selected | Stop; restore the private state backup or follow [Terraform import guidance](https://developer.hashicorp.com/terraform/language/import) after checking the subscription |
+
+### 🛠️ Issues encountered during bootstrap setup
+
+| What you see | Why it happens | What to do / where to look |
+|---|---|---|
+| Terraform prompts for backend `container_name` during bootstrap setup | `terraform init` was likely run in the project root, which configures the platform's remote backend, rather than in `bootstrap` | Cancel with Ctrl+C. From the project root, enter `bootstrap` and rerun `terraform init`. The bootstrap variable `state_container_name` defaults to `tfstate`; backend settings are separate. |
+| `AADSTS7000222` says a client secret has expired | Old `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET` and `ARM_TENANT_ID` environment credentials can make Terraform use an old service principal instead of the Azure CLI login | Clear the stale credentials from the current shell, sign in with `az login`, select the subscription and retry. Remove saved User-scope credentials only if no other project needs them. Never print or share secret values. |
+| Several different IDs appear for the service connection | Azure DevOps service connection ID, app/client ID, App registration object ID and service principal object ID identify different things | Use the **service principal object ID** from Enterprise applications or `az ad sp show` in `bootstrap.tfvars`. |
+| Contributor is visible but Terraform cannot access blobs | Contributor is a management role; it does not by itself grant Microsoft Entra blob data access | Check **Storage Blob Data Contributor** for the correct identity on the state storage account. Allow time for role propagation. |
 
 ## 📚 References
 
