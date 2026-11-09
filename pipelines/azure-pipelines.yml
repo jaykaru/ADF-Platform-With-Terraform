@@ -63,6 +63,8 @@ stages:
                   -backend-config="key=$(environmentName).tfstate" \
                   -backend-config="use_azuread_auth=true"
                 terraform validate
+                echo "Review the plan, including the managed identity role assignments, before approving Apply."
+                echo "The service connection needs permission to create role assignments as well as manage resources."
                 terraform plan -input=false -var-file="environments/$(environmentName).tfvars" -out=tfplan
             env:
               SUBSCRIPTION_ID: $(subscriptionId)

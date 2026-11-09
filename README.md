@@ -1,6 +1,6 @@
 # ADF Platform With Terraform
 
-This project will manage an Azure Data Factory (ADF) platform with Terraform. The platform configuration currently defines the development resource group `rg-adfdemo-dev` in France Central. The storage and Data Factory modules are placeholders; the configuration does not yet create a data factory.
+This project manages an Azure Data Factory (ADF) platform with Terraform. The platform configuration defines a resource group, data storage, a Data Factory, a user-assigned managed identity, a Key Vault, role assignments and a managed private endpoint. Review the plan before applying to see which resources will be created or changed.
 
 ## 📌 Progress and next steps
 
@@ -16,7 +16,7 @@ The role assignment was confirmed in the portal; the bootstrap apply outcome and
 ## 📁 Project structure
 
 ```text
-main.tf                       # Platform resource group
+main.tf                       # Platform resource group and module calls
 variables.tf                  # Platform inputs
 outputs.tf                    # Future platform outputs
 providers.tf                  # Remote state backend configuration
@@ -26,11 +26,15 @@ environments/
 pipelines/
   azure-pipelines.yml         # Azure DevOps Plan and Apply pipeline
 modules/
-  storage/                    # Future platform storage module
+  storage/                    # Platform data storage module
     main.tf
     variables.tf
     outputs.tf
-  data-factory/               # Future Data Factory module
+  data-factory/               # Data Factory module
+    main.tf
+    variables.tf
+    outputs.tf
+  managed-identity/           # User-assigned managed identity module
     main.tf
     variables.tf
     outputs.tf
@@ -39,7 +43,6 @@ bootstrap/                    # Separate configuration for state storage and blo
   variables.tf
   outputs.tf
   bootstrap.tfvars            # Local identity inputs; ignored by Git
-  tests/
 .gitignore
 README.md
 ```
@@ -47,7 +50,11 @@ README.md
 ## 🧭 How the two Terraform configurations work
 
 1. **Bootstrap:** creates a resource group, storage account, private blob container, and blob role assignments. Its own state is initially stored locally in `bootstrap/terraform.tfstate`.
-2. **ADF platform:** the configuration in the project root uses the blob container for its separate state file, such as `dev.tfstate`. Running it does not update bootstrap state. The storage and Data Factory module files are placeholders, not yet connected to the root configuration.
+2. **ADF platform:** the configuration in the project root uses the blob container for its separate state file, such as `dev.tfstate`. Running it does not update bootstrap state. The root configuration calls the storage, Data Factory and managed identity modules.
+
+The user-assigned managed identity is attached to ADF and has role assignments in the configuration for the data storage account and Key Vault. It is separate from the pipeline service connection. Configuring the identity and permissions does not create an ADF credential or linked service; those need to be configured before ADF can use them to access data.
+
+The managed private endpoint targets the storage account's `dfs` endpoint. Check and approve the connection where required, and configure a managed virtual network integration runtime and linked service separately. The endpoint does not by itself disable public access or make every ADF connection private.
 
 The platform uses `environments/dev.tfvars` for development values instead of a root `terraform.tfvars`. Terraform does not load it automatically: pass `"-var-file=environments/dev.tfvars"` to commands such as `terraform plan`. It selects the name `rg-adfdemo-dev`, the region `francecentral` and the `dev` environment.
 
@@ -155,7 +162,7 @@ terraform init `
 
 The signed-in user must have the blob data role too; assigning it only to a pipeline does not give your user access. If the role was just assigned, wait and retry after propagation. Use a distinct state key for each environment and choose access boundaries deliberately—separate keys alone are not security isolation.
 
-The platform configuration currently defines a resource group. The storage and Data Factory modules are placeholders. Backend initialization alone does not deploy anything or create the state file. If you already have platform state elsewhere, stop and follow Terraform's [state migration guidance](https://developer.hashicorp.com/terraform/language/settings/backends/configuration#migrate-state-between-backends) instead of starting with an empty backend.
+The platform configuration defines a resource group, storage, Data Factory, managed identity, Key Vault, role assignments and a managed private endpoint. Backend initialization alone does not deploy anything or create the state file. If you already have platform state elsewhere, stop and follow Terraform's [state migration guidance](https://developer.hashicorp.com/terraform/language/settings/backends/configuration#migrate-state-between-backends) instead of starting with an empty backend.
 
 After initializing the backend, select the development values explicitly from the project root:
 
@@ -173,12 +180,12 @@ The pipeline in `pipelines/azure-pipelines.yml` installs Terraform 1.13.3 and ru
 > Verify the pipeline values and complete the steps below before running it. An Azure DevOps environment name alone does **not** create an approval: configure the approval check before the first run.
 
 1. **Create and authorize the service connection.** In Azure DevOps, go to **Project settings > Service connections** and create an Azure Resource Manager service connection using workload identity federation for the intended subscription. Confirm `serviceConnection` in the YAML matches its exact name. Permit this pipeline to use it when requested.
-2. **Check the subscription.** Confirm `subscriptionId` is the ID of the subscription selected in the service connection. The pipeline checks that they match. The service connection identity needs permission to create the resource group, such as Contributor at subscription scope or a suitable custom role. Subscription-wide Contributor also allows management of many other resources, so use the least privilege appropriate to your organization.
+2. **Check the subscription and permissions.** Confirm `subscriptionId` is the ID of the subscription selected in the service connection. The pipeline checks that they match. The service connection identity needs permissions to manage the platform resources **and** `Microsoft.Authorization/roleAssignments/write` at the data storage account and Key Vault scopes, to grant roles to the ADF identity. Contributor alone cannot create role assignments. Use appropriately scoped permissions approved by your administrator; unrestricted subscription-wide access is broader than necessary.
 3. **Create state storage and give blob access.** Complete the bootstrap setup above. Add the pipeline service principal's **object ID** to `state_blob_principal_object_ids` in `bootstrap/bootstrap.tfvars`, then review and apply the bootstrap plan. If bootstrap was already applied, apply a new bootstrap plan with the added identity. Do not remove your existing identities. This creates **Storage Blob Data Contributor** at the state storage account scope; Contributor alone does not grant blob data access. Wait for role propagation.
 4. **Check the backend values.** Use `terraform output backend_config` from the bootstrap directory to verify `stateResourceGroup`, `stateStorageAccount` and `stateContainer` in the pipeline. The environment name `dev` selects `environments/dev.tfvars` and the `dev.tfstate` blob.
 5. **Create the approval.** In Azure DevOps, open **Pipelines > Environments**, create `adf-platform-dev`, then open its **Approvals and checks** and add the appropriate approver. Restrict access to the environment and service connection. Without this check Apply will not wait for a human approval.
 6. **Create the pipeline.** Commit and push the files, including `.terraform.lock.hcl`. In Azure DevOps choose **Pipelines > New pipeline**, connect the repository, and select **Existing Azure Pipelines YAML file** with path `pipelines/azure-pipelines.yml`. Authorize required resources and manually run it on `main` once the values and prerequisites are confirmed.
-7. **Review before approving.** For the first deployment, expect a plan to create one resource group: `rg-adfdemo-dev` in `francecentral`. If the plan proposes anything unexpected, reject it and investigate. After approval, Apply runs the saved plan; verify the resource group and the `dev.tfstate` blob in Azure.
+7. **Review before approving.** Check the planned resource group, data storage, Data Factory, managed identity, Key Vault, role assignments and private endpoint against the current configuration and state. If an existing Data Factory changes identity type, review the impact on existing connections and permissions before approving. If the plan proposes anything unexpected, reject it and investigate. After approval, Apply runs the saved plan; verify the deployed resources and the `dev.tfstate` blob in Azure.
 
 The saved plan can contain sensitive data. Limit access to the pipeline and its artifacts and use an appropriate retention period. The pipeline does not run bootstrap or assign its own roles.
 
