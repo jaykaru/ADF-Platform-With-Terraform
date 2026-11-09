@@ -1,15 +1,16 @@
-# Add platform input variables here.
+variable "resource_group_name" {
+  description = "Name of the platform resource group."
+  type        = string
+}
+
 variable "location" {
-  type    = string
-  default = "uksouth"
+  type = string
 }
 
 variable "environment" {
-  type    = string
-  default = "dev"
+  type = string
 }
 
 variable "project_name" {
-  type    = string
-  default = "adfdemo"
+  type = string
 }
